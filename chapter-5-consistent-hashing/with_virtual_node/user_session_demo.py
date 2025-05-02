@@ -36,6 +36,9 @@ You could also simulate session data being moved.
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
+import hashlib
+import bisect
+from typing import List, Dict
 
 # Step 1: Create a list of 50 users (user1, user2, ..., user50)
 users = [f"user{i+1}" for i in range(50)]
@@ -94,8 +97,79 @@ def random_session(user_id):
 # Step 3: Generate session data for all users
 sessions = [random_session(user) for user in users]
 
+# Consistent Hashing Implementation
+class ConsistentHashRing:
+    """
+    Consistent Hash Ring for mapping keys (user IDs) to nodes (servers).
+    """
+    def __init__(self, nodes: List[str] = None, replicas: int = 3):
+        self.replicas = replicas
+        self.ring = dict()
+        self.sorted_keys = []
+        self.nodes = set()
+        if nodes:
+            for node in nodes:
+                self.add_node(node)
+
+    def _hash(self, key: str) -> int:
+        return int(hashlib.md5(key.encode('utf-8')).hexdigest(), 16)
+
+    def add_node(self, node: str):
+        self.nodes.add(node)
+        for i in range(self.replicas):
+            virtual_node = f"{node}#{i}"
+            key = self._hash(virtual_node)
+            self.ring[key] = node
+            bisect.insort(self.sorted_keys, key)
+
+    def remove_node(self, node: str):
+        self.nodes.discard(node)
+        for i in range(self.replicas):
+            virtual_node = f"{node}#{i}"
+            key = self._hash(virtual_node)
+            if key in self.ring:
+                del self.ring[key]
+                idx = bisect.bisect_left(self.sorted_keys, key)
+                if idx < len(self.sorted_keys) and self.sorted_keys[idx] == key:
+                    self.sorted_keys.pop(idx)
+
+    def get_node(self, key_str: str) -> str:
+        if not self.ring:
+            return None
+        key = self._hash(key_str)
+        idx = bisect.bisect(self.sorted_keys, key) % len(self.sorted_keys)
+        return self.ring[self.sorted_keys[idx]]
+
+    def get_assignments(self, keys: List[str]) -> Dict[str, str]:
+        return {k: self.get_node(k) for k in keys}
+
 if __name__ == "__main__":
     # Print all generated session data
     print("Sample session data for 50 users:\n")
     for session in sessions:
         print(session)
+
+    # Assign users to servers using consistent hashing (no virtual nodes, replicas=1)
+    ring = ConsistentHashRing(nodes=servers, replicas=1)
+    assignments = ring.get_assignments(users)
+    print("\nUser-to-server assignments (initial, no virtual nodes):")
+    for user, server in assignments.items():
+        print(f"{user} -> {server}")
+
+    # Simulate adding a server ("Eta")
+    ring.add_node("Eta")
+    assignments_after_add = ring.get_assignments(users)
+    moved_add = [user for user in users if assignments[user] != assignments_after_add[user]]
+    print("\nAfter adding server 'Eta':")
+    print(f"Users whose assigned server changed: {len(moved_add)}/{len(users)}")
+    for user in moved_add:
+        print(f"{user}: {assignments[user]} -> {assignments_after_add[user]}")
+
+    # Simulate removing a server ("Beta")
+    ring.remove_node("Beta")
+    assignments_after_remove = ring.get_assignments(users)
+    moved_remove = [user for user in users if assignments_after_add[user] != assignments_after_remove[user]]
+    print("\nAfter removing server 'Beta':")
+    print(f"Users whose assigned server changed: {len(moved_remove)}/{len(users)}")
+    for user in moved_remove:
+        print(f"{user}: {assignments_after_add[user]} -> {assignments_after_remove[user]}")
